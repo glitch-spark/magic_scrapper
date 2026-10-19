@@ -61,8 +61,6 @@ _DETAIL_RETRIES = 2
 _DETAIL_WORKERS = 4
 _RETRY_DELAY = 1.5
 _FETCH_DELAY = 0.4
-# Newest-first leftover cap after first-stale + engineering filter.
-_MAX_NEW = 400
 # Runaway: how many month shards to open (newest first).
 _MAX_MONTH_SHARDS = 6
 _ENGINEERING_KEYWORDS = {
@@ -153,7 +151,6 @@ class RemoteWlbConnector(BaseConnector):
         unseen = unseen_listing_urls(
             [job["listing_url"] for job in page_jobs],
             self.source_name,
-            max_new=_MAX_NEW,
         )
         pending_urls = set(unseen)
         pending = [job for job in page_jobs if job["listing_url"] in pending_urls]

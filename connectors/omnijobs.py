@@ -57,7 +57,6 @@ _OPEN_RETRIES = 3
 _FETCH_DELAY = 0.4
 # Runaway only. Newest-first pages stop at the first stale card.
 _MAX_PAGES = 15
-_MAX_UNSEEN_FETCHES = 40
 _LOCATIONS = (
     "US",
     "ANYWHERE_IN_LATAM",
@@ -223,7 +222,6 @@ class OmniJobsConnector(BaseConnector):
         unseen = unseen_listing_urls(
             [job["listing_url"] for job in listed],
             self.source_name,
-            max_new=_MAX_UNSEEN_FETCHES,
         )
         pending_urls = set(unseen)
         pending = [job for job in listed if job["listing_url"] in pending_urls]

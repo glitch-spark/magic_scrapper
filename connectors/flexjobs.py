@@ -33,6 +33,7 @@ from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
 
 from connectors.base import BaseConnector
+from utils.alerts import ScrapeHalted, halt
 from utils.ats_detector import detect_ats
 from utils.job_age import job_age_cutoff
 from utils.job_store import known_job_urls, remember_listing_urls
@@ -107,6 +108,8 @@ class FlexJobsConnector(BaseConnector):
                         remembered,
                         on_job=self._emit,
                     )
+        except ScrapeHalted:
+            raise
         except Exception as e:
             logger.error(f"Error fetching jobs from flexjobs: {e}")
             logger.debug(traceback.format_exc())
@@ -240,7 +243,11 @@ def _login(page: Any, email: str, password: str) -> bool:
         return False
     if page.locator("iframe[src*='recaptcha'], iframe[src*='hcaptcha']").count():
         logger.error("FlexJobs login requires captcha — cannot continue headless")
-        return False
+        halt(
+            "login_halt",
+            "FlexJobs login requires captcha. Sign in manually, then rerun the fetch.",
+            source="flexjobs",
+        )
 
     page.fill("#email", email)
     page.fill("#password", password)

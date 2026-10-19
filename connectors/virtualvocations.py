@@ -61,8 +61,6 @@ _DETAIL_TIMEOUT = 25
 _RETRIES = 3
 _RETRY_DELAY = 1.5
 _FETCH_DELAY = 0.4
-# Newest-first leftover cap after first-stale + engineering filter.
-_MAX_NEW = 400
 _ENGINEERING_KEYWORDS = {
     "engineer", "engineering", "developer", "software", "backend", "frontend",
     "full stack", "full-stack", "fullstack", "devops", "sre", "data engineer",
@@ -143,7 +141,6 @@ class VirtualVocationsConnector(BaseConnector):
         unseen = unseen_listing_urls(
             [job["listing_url"] for job in page_jobs],
             self.source_name,
-            max_new=_MAX_NEW,
         )
         pending_urls = set(unseen)
         pending = [job for job in page_jobs if job["listing_url"] in pending_urls]

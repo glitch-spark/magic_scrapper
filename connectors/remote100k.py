@@ -50,9 +50,6 @@ _HEADERS = {
 
 # Live sitemap has no lastmod; datePosted walk on 2026-09-14 was newest-first.
 _SITEMAP_NEWEST_FIRST = True
-# Runaway only; first-stale stop should fire earlier (~160 eng URLs at 30 days).
-_MAX_NEW = 400
-_MAX_UNSEEN_FETCHES = 300
 _FETCH_DELAY = 0.4
 _API_TIMEOUT = 40
 _RETRIES = 3
@@ -111,8 +108,7 @@ class Remote100kConnector(BaseConnector):
 
         newest_first = has_lastmod or _SITEMAP_NEWEST_FIRST
         eng_urls = [u for u in urls if _is_engineering_url(u)]
-        cap = _MAX_NEW if newest_first else _MAX_UNSEEN_FETCHES
-        to_fetch = unseen_listing_urls(eng_urls, self.source_name, max_new=cap)
+        to_fetch = unseen_listing_urls(eng_urls, self.source_name)
         cutoff = job_age_cutoff(self.source_name)
         logger.info(
             f"Sitemap: {len(urls)} job URLs total, "

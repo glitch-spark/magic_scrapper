@@ -8,6 +8,7 @@ python-dotenv
 lxml
 pyyaml
 playwright==1.58.0
+cloakbrowser
 curl_cffi==0.16.3
 keyring
 fastapi
@@ -19,3 +20,4 @@ httpx
 python-docx
 fpdf2
 apscheduler
+pymongo

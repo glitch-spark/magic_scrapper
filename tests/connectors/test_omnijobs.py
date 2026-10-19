@@ -214,7 +214,14 @@ def test_fetch_stops_at_first_stale_on_newest_first(
     )
     mock_listing.return_value = _listing_html(fresh, stale)
     mock_detail.return_value = _detail_html()
-    jobs = OmniJobsConnector().fetch_jobs()
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _NOW
+
+    with patch("connectors.omnijobs.datetime", _FrozenDateTime):
+        jobs = OmniJobsConnector().fetch_jobs()
     assert [j["id"] for j in jobs] == ["1"]
     assert mock_listing.call_count == 1
     assert jobs[0]["url"].startswith("https://jobs.lever.co/")

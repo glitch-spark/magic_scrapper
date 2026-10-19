@@ -9,10 +9,8 @@ Strategy
 1. Query the GraphQL API with ``jobs(limit=N, sort: DATE_DESC)`` to retrieve
    the most recent listings with title, location, and company name.
 2. Filter to engineering-relevant jobs by title keyword.
-3. For each filtered job fetch the individual Flexa job page and extract the
-   ``JobPosting`` JSON-LD block (which contains the full HTML description and
-   ``datePosted`` / ``validThrough`` fields).
-4. Skip postings whose ``validThrough`` date has already passed.
+3. Fetch each engineering job page for JSON-LD description / ``datePosted``.
+4. Stop at the first stale ``datePosted`` (DATE_DESC). Skip expired ``validThrough``.
 5. Return the Flexa page URL as the job URL — the prefill system will open it,
    find the employer apply link via ``extract_apply_url``, and navigate to the
    real ATS.
@@ -31,8 +29,9 @@ from dateutil import parser as dateutil_parser
 
 from connectors.base import BaseConnector
 from utils.ats_detector import detect_ats
-from utils.text_cleaning import clean_description
+from utils.job_age import job_age_cutoff, max_job_age_days
 from utils.logger import setup_logger
+from utils.text_cleaning import clean_description
 
 logger = setup_logger("flexa_connector")
 
@@ -54,9 +53,7 @@ _PAGE_HEADERS = {
 }
 
 # GraphQL jobs to fetch per request (API limit unknown — 300 is conservative).
-# Listing is DATE_DESC newest-first, so a page-fetch prefix cap is OK.
 _GRAPHQL_BATCH = 300
-_MAX_PAGE_FETCHES = 100
 _FETCH_DELAY = 0.4
 _API_TIMEOUT = 40
 _RETRIES = 3
@@ -88,7 +85,12 @@ class FlexaConnector(BaseConnector):
         self.source_name = "flexa"
 
     def fetch_jobs(self) -> List[Dict[str, Any]]:
-        logger.info("Fetching jobs from flexa.careers GraphQL API…")
+        age_days = max_job_age_days(self.source_name)
+        cutoff = job_age_cutoff(self.source_name)
+        logger.info(
+            "Fetching jobs from flexa.careers GraphQL API "
+            f"(DATE_DESC, age_days={age_days}; stop at first stale job)…"
+        )
 
         raw_jobs = _fetch_graphql_jobs(_GRAPHQL_BATCH)
         logger.info(f"GraphQL returned {len(raw_jobs)} jobs total")
@@ -97,11 +99,18 @@ class FlexaConnector(BaseConnector):
         logger.info(f"{len(eng_jobs)} match engineering keywords")
 
         jobs: List[Dict[str, Any]] = []
-        for gql_job in eng_jobs[:_MAX_PAGE_FETCHES]:
+        for gql_job in eng_jobs:
             url = (gql_job.get("url") or "").strip()
             try:
                 enriched = _enrich_from_page(gql_job)
                 if enriched:
+                    posted = enriched.get("posted_date")
+                    if posted:
+                        if posted.tzinfo is None:
+                            posted = posted.replace(tzinfo=timezone.utc)
+                        if posted < cutoff:
+                            logger.info("flexa first stale job — stopping")
+                            break
                     self._emit(enriched, jobs)
                 time.sleep(_FETCH_DELAY)
             except Exception as e:

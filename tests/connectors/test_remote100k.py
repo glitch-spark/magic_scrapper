@@ -15,7 +15,6 @@ import pytest
 import config
 from connectors.remote100k import (
     Remote100kConnector,
-    _MAX_NEW,
     _extract_ats_url,
     _extract_job,
     _is_engineering_url,
@@ -324,8 +323,8 @@ class TestRemote100kFetch:
 
     @patch("connectors.remote100k.time.sleep")
     @patch("connectors.remote100k.requests.get")
-    def test_no_lastmod_uses_newest_first_cap(self, mock_get, mock_sleep):
-        slugs = [f"acme-engineer-{i}" for i in range(_MAX_NEW + 10)]
+    def test_fetches_all_unseen_until_stale(self, mock_get, mock_sleep):
+        slugs = [f"acme-engineer-{i}" for i in range(5)]
         items = "\n".join(
             f"  <url><loc>https://remote100k.com/remote-job/{s}</loc></url>" for s in slugs
         )
@@ -337,8 +336,9 @@ class TestRemote100kFetch:
         mock_get.side_effect = [_mock_response(xml)] + [
             _mock_response(_job_html()) for _ in slugs
         ]
-        Remote100kConnector().fetch_jobs()
-        assert mock_get.call_count == 1 + _MAX_NEW
+        jobs = Remote100kConnector().fetch_jobs()
+        assert len(jobs) == 5
+        assert mock_get.call_count == 1 + 5
 
     @patch("connectors.remote100k.time.sleep")
     @patch("connectors.remote100k.requests.get")

@@ -34,6 +34,7 @@ from sqlalchemy.orm import defer, sessionmaker
 import config
 from models.database import CompanyProfile, InterviewPrepSheet, Job, ensure_company_profiles, ensure_job_columns
 from utils.dedup import backfill_dedup_keys
+from utils.job_store import configure_sqlite
 from utils.application_filter import (
     applied_to_same_company_within_days,
     recent_applied_company_keys,
@@ -49,7 +50,12 @@ from utils.text_cleaning import sanitize_skill_object_dumps, clean_description
 
 app = FastAPI(title="Job Apply Agent UI")
 
-_engine = create_engine(config.DATABASE_URL, connect_args={"check_same_thread": False})
+_sqlite = str(config.DATABASE_URL).startswith("sqlite")
+_engine = create_engine(
+    config.DATABASE_URL,
+    connect_args={"timeout": 30, "check_same_thread": False} if _sqlite else {},
+)
+configure_sqlite(_engine)
 _Session = sessionmaker(bind=_engine)
 if _engine.dialect.name == "sqlite":
     ensure_job_columns(_engine)

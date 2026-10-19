@@ -8,6 +8,11 @@ load_dotenv()
 
 DATABASE_URL = "sqlite:///job_apply_agent.db"
 
+# Optional mirror of each scraped jobs row. Unset leaves SQLite as the only store.
+MONGODB_URI = (os.getenv("MONGODB_URI") or "").strip()
+MONGODB_DB = (os.getenv("MONGODB_DB") or "EngineerDB").strip() or "EngineerDB"
+MONGODB_JOBS_COLLECTION = (os.getenv("MONGODB_JOBS_COLLECTION") or "scraping_pool").strip() or "scraping_pool"
+
 # Safety settings
 DRY_RUN = True  # Default to safe mode
 SAFETY_LIMITS = {
@@ -40,7 +45,7 @@ OLLAMA_MODEL = OLLAMA_CLOUD_MODEL if OLLAMA_MODE == "cloud" else OLLAMA_LOCAL_MO
 LLM_TIMEOUT = 120
 LLM_MAX_JOBS_PER_RUN = 2000
 MAX_JOB_AGE_DAYS = 2  # Incremental fetch window after a source has been ingested
-MAX_JOB_AGE_DAYS_INITIAL = 7  # First completed fetch for a source (jobs_fetched > 0)
+MAX_JOB_AGE_DAYS_INITIAL = 3  # First completed fetch for a source (jobs_fetched > 0)
 MAX_DEDUPLICATION_PERIOD = 7  # Days to deduplicate jobs
 REJECT_STALE_DAYS = 3  # Review and shortlisted jobs older than this can be bulk-archived
 LLM_STATUS_DEFAULT = "review"

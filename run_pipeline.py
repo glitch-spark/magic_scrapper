@@ -16,6 +16,7 @@ from sqlalchemy import create_engine, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from models.database import Job, PipelineRun, ApplicationHistory, ensure_company_profiles, ensure_job_columns
+from utils.job_store import configure_sqlite
 from connectors.remotive import RemotiveConnector
 from connectors.remoteok import RemoteOKConnector
 from connectors.weworkremotely import WeWorkRemotelyConnector
@@ -95,7 +96,9 @@ from utils.resume_selector import select_resume
 from utils.logger import setup_logger
 from utils.email_report import send_report
 from utils.full_run_sources import enabled_sources, read_enabled
+from utils.alerts import ScrapeHalted, alert, halt, is_db_write_error, is_skippable_db_lock
 from utils.job_age import age_days_override, max_job_age_days, resolve_job_age_days
+from utils.mongo_jobs import mirror_job
 from utils.job_inclusion import drop_ineligible_jobs, exclusion_reason, load_candidate_profile
 import config
 
@@ -191,7 +194,12 @@ SYSTEM_BROWSER_DOMAINS = {
     "omnijobs.io",
 }
 
-engine = create_engine(config.DATABASE_URL)
+_sqlite = str(config.DATABASE_URL).startswith("sqlite")
+engine = create_engine(
+    config.DATABASE_URL,
+    connect_args={"timeout": 30, "check_same_thread": False} if _sqlite else {},
+)
+configure_sqlite(engine)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 if engine.dialect.name == "sqlite":
     ensure_job_columns(engine)
@@ -262,10 +270,18 @@ def _persist_raw_job(
                 posted_date = posted_date.replace(tzinfo=datetime.timezone.utc)
             if posted_date < cutoff:
                 run.jobs_duplicates += 1
+                if not dry_run:
+                    session.commit()
+                else:
+                    session.rollback()
                 return
 
         if is_duplicate(normalized, session):
             run.jobs_duplicates += 1
+            if not dry_run:
+                session.commit()
+            else:
+                session.rollback()
             return
 
         skip = exclusion_reason(normalized, profile)
@@ -274,6 +290,10 @@ def _persist_raw_job(
                 f"Skipped ingest ({skip[0]}): '{normalized.get('title')}' — {skip[1]}"
             )
             run.jobs_duplicates += 1
+            if not dry_run:
+                session.commit()
+            else:
+                session.rollback()
             return
 
         job_record = Job(**normalized)
@@ -282,6 +302,7 @@ def _persist_raw_job(
         run.jobs_new += 1
         if not dry_run:
             session.commit()
+            mirror_job(job_record)
     except IntegrityError:
         session.rollback()
         run.jobs_duplicates += 1
@@ -289,9 +310,14 @@ def _persist_raw_job(
             f"Skipped duplicate job (unique constraint): "
             f"{(normalized or {}).get('url')}"
         )
+    except ScrapeHalted:
+        session.rollback()
+        raise
     except Exception as e:
         session.rollback()
         logger.error(f"Error processing job: {e}")
+        if not is_skippable_db_lock(e) and is_db_write_error(e):
+            halt("db_write", str(e), source="sqlite")
 
 
 def _drop_stored_ineligible(profile, dry_run: bool) -> None:
@@ -338,9 +364,13 @@ def _run_fetch(
         else:
             logger.info(f"Full-run sources: {len(selected)} selected")
         for s in selected:
-            _run_fetch(
-                s, dry_run, initial=initial, age_days=age_days, _skip_cleanup=True
-            )
+            try:
+                _run_fetch(
+                    s, dry_run, initial=initial, age_days=age_days, _skip_cleanup=True
+                )
+            except ScrapeHalted:
+                logger.error(f"Stopped the remaining sources after {s}")
+                return
         return
 
     if source not in CONNECTORS:
@@ -401,7 +431,17 @@ def _run_fetch_source(source: str, dry_run: bool, profile=None):
             logger.warning(msg)
         else:
             logger.info(msg)
-        
+        alert("info", "report", msg, source=source)
+
+    except ScrapeHalted as e:
+        session.rollback()
+        logger.error(f"Scraping stopped: {e}")
+        run.status = "failed"
+        run.error_message = str(e)
+        run.completed_at = datetime.datetime.now(datetime.timezone.utc)
+        if not dry_run:
+            session.commit()
+        raise
     except Exception as e:
         session.rollback()
         logger.error(f"Pipeline failed: {e}")
@@ -758,7 +798,10 @@ def triage():
 @click.option('--age-days', type=int, default=None, help='Override job age window in days')
 def fetch(source: str, dry_run: bool, initial: bool, age_days: int | None):
     """Fetch remote jobs from the specified source."""
-    _run_fetch(source, dry_run, initial=initial, age_days=age_days)
+    try:
+        _run_fetch(source, dry_run, initial=initial, age_days=age_days)
+    except ScrapeHalted as e:
+        raise SystemExit(1) from e
 
 @cli.command()
 @click.option('--profile', default='profile.yaml', help='Path to candidate profile YAML')
@@ -823,7 +866,10 @@ def full_run(source: str, profile: str, model: str, analyze_status: str, analyze
     finally:
         session.close()
 
-    _run_fetch(source, dry_run, initial=initial, age_days=age_days)
+    try:
+        _run_fetch(source, dry_run, initial=initial, age_days=age_days)
+    except ScrapeHalted as e:
+        raise SystemExit(1) from e
     _run_evaluate(profile, dry_run, all_jobs=False)
     # Always analyze both buckets so no shortlisted/review job is left without
     # LLM metrics regardless of which bucket new jobs land in.

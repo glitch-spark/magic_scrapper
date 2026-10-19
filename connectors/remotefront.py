@@ -50,8 +50,6 @@ _OPEN_RETRIES = 3
 _FETCH_DELAY = 0.4
 # Mixed-date pager; runaway only.
 _MAX_PAGES = 40
-# Detail budget for mixed list (seen URLs already filtered).
-_MAX_UNSEEN_FETCHES = 80
 _ENGINEERING_KEYWORDS = {
     "engineer", "engineering", "developer", "software", "backend", "frontend",
     "full stack", "full-stack", "fullstack", "devops", "sre", "data engineer",
@@ -196,9 +194,7 @@ class RemoteFrontConnector(BaseConnector):
         if not listed:
             return
         urls = [job["listing_url"] for job in listed]
-        to_fetch = unseen_listing_urls(
-            urls, self.source_name, max_new=_MAX_UNSEEN_FETCHES
-        )
+        to_fetch = unseen_listing_urls(urls, self.source_name)
         wanted = set(to_fetch)
         pending = [job for job in listed if job["listing_url"] in wanted]
         if not pending:

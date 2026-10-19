@@ -91,9 +91,14 @@ def test_extract_jsonld():
     assert raw["company"] == "DeepCo"
 
 
+@patch("connectors.wearedistributed.remember_listing_urls")
+@patch(
+    "connectors.wearedistributed.unseen_listing_urls",
+    side_effect=lambda urls, source, **kwargs: list(urls),
+)
 @patch("connectors.wearedistributed.time.sleep")
 @patch("connectors.wearedistributed.requests.get")
-def test_fetch_returns_jobs(mock_get, _sleep):
+def test_fetch_returns_jobs(mock_get, _sleep, *_patches):
     mock_get.side_effect = [
         _mock_response(_sitemap_xml("acme-senior-engineer")),
         _mock_response(_job_html("Senior Engineer", "Acme")),
@@ -103,17 +108,25 @@ def test_fetch_returns_jobs(mock_get, _sleep):
     assert jobs[0]["title"] == "Senior Engineer"
 
 
+@patch("connectors.wearedistributed.remember_listing_urls")
+@patch("connectors.wearedistributed.unseen_listing_urls")
 @patch("connectors.wearedistributed.time.sleep")
 @patch("connectors.wearedistributed.requests.get")
-def test_sitemap_timeout_retries_then_empty(mock_get, _sleep):
+def test_sitemap_timeout_retries_then_empty(mock_get, _sleep, mock_unseen, *_patches):
     mock_get.side_effect = RequestsTimeout("read timeout=40")
     assert WeAreDistributedConnector().fetch_jobs() == []
     assert mock_get.call_count == _RETRIES
+    mock_unseen.assert_not_called()
 
 
+@patch("connectors.wearedistributed.remember_listing_urls")
+@patch(
+    "connectors.wearedistributed.unseen_listing_urls",
+    side_effect=lambda urls, source, **kwargs: list(urls),
+)
 @patch("connectors.wearedistributed.time.sleep")
 @patch("connectors.wearedistributed.requests.get")
-def test_detail_timeout_skips_and_continues(mock_get, _sleep):
+def test_detail_timeout_skips_and_continues(mock_get, _sleep, *_patches):
     mock_get.side_effect = [
         _mock_response(_sitemap_xml("slow-engineer", "ok-engineer")),
         *([RequestsTimeout("timeout")] * _RETRIES),

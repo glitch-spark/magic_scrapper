@@ -9,8 +9,8 @@ Strategy
 1. Parse sitemap.xml to collect all ``/job/<slug>`` URLs (newest-first by
    ``lastmod``).
 2. Filter to engineering-relevant slugs (keyword substring match).
-3. For each new URL fetch the page and extract the ``JobPosting`` JSON-LD block.
-4. Skip postings whose ``validThrough`` date has already passed.
+3. Skip known listing URLs, then fetch unseen pages and extract JSON-LD.
+4. Stop at the first stale ``datePosted`` (newest-first). Skip expired ``validThrough``.
 5. Return the wearedistributed.org page URL as the job URL — the prefill
    system will open it, find the employer apply link via ``extract_apply_url``,
    and navigate to the real ATS.
@@ -30,8 +30,10 @@ from dateutil import parser as dateutil_parser
 
 from connectors.base import BaseConnector
 from utils.ats_detector import detect_ats
-from utils.text_cleaning import clean_description
+from utils.job_age import job_age_cutoff, max_job_age_days
+from utils.job_store import remember_listing_urls, unseen_listing_urls
 from utils.logger import setup_logger
+from utils.text_cleaning import clean_description
 
 logger = setup_logger("wearedistributed_connector")
 
@@ -44,9 +46,6 @@ _HEADERS = {
     "Accept": "application/xml,text/xml,*/*",
 }
 
-# Max new job pages to fetch per pipeline run (avoids hammering the server).
-# Sitemap is sorted newest-first by lastmod, so a prefix cap is OK.
-_MAX_NEW = 120
 _FETCH_DELAY = 0.5
 _API_TIMEOUT = 40
 _RETRIES = 3
@@ -68,7 +67,13 @@ class WeAreDistributedConnector(BaseConnector):
         self.source_name = "wearedistributed"
 
     def fetch_jobs(self) -> List[Dict[str, Any]]:
-        logger.info("Fetching jobs from wearedistributed.org sitemap…")
+        age_days = max_job_age_days(self.source_name)
+        cutoff = job_age_cutoff(self.source_name)
+        logger.info(
+            "Fetching jobs from wearedistributed.org sitemap "
+            f"(newest-first lastmod, age_days={age_days}; "
+            "stop at first stale job)…"
+        )
         content = _fetch_bytes(_SITEMAP_URL, "sitemap")
         if content is None:
             return []
@@ -80,21 +85,35 @@ class WeAreDistributedConnector(BaseConnector):
             return []
 
         eng_urls = [u for u in urls if _is_engineering_url(u)]
+        to_fetch = unseen_listing_urls(eng_urls, self.source_name)
         logger.info(
             f"Sitemap: {len(urls)} job URLs total, "
-            f"{len(eng_urls)} match engineering keywords"
+            f"{len(eng_urls)} match engineering keywords, "
+            f"fetching {len(to_fetch)}"
         )
 
         jobs: List[Dict[str, Any]] = []
-        for url in eng_urls[:_MAX_NEW]:
+        crawled: List[str] = []
+        for url in to_fetch:
             try:
                 raw = _fetch_job_page(url)
+                crawled.append(url)
                 if raw:
+                    posted = raw.get("posted_date")
+                    if posted:
+                        if posted.tzinfo is None:
+                            posted = posted.replace(tzinfo=timezone.utc)
+                        if posted < cutoff:
+                            logger.info(
+                                "wearedistributed first stale job — stopping"
+                            )
+                            break
                     self._emit(raw, jobs)
                 time.sleep(_FETCH_DELAY)
             except Exception as e:
                 logger.warning(f"Failed to fetch {url}: {e}")
                 logger.debug(traceback.format_exc())
+        remember_listing_urls(self.source_name, crawled)
 
         logger.info(f"Successfully fetched {len(jobs)} jobs from wearedistributed.org")
         return jobs

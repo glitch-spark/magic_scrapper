@@ -46,8 +46,6 @@ _FETCH_DELAY = 0.4
 _API_TIMEOUT = 40
 _RETRIES = 3
 _RETRY_DELAY = 1.5
-# Guest page is ~33 cards and has no pager. Cap is a runaway guard only.
-_MAX_UNSEEN_FETCHES = 80
 
 _DATA_PAGE_RE = re.compile(r'data-page="([^"]*)"', re.IGNORECASE)
 _RELATIVE_RE = re.compile(
@@ -96,9 +94,7 @@ class YCombinatorConnector(BaseConnector):
             parsed.append(raw)
 
         urls = [job["url"] for job in parsed]
-        to_fetch = unseen_listing_urls(
-            urls, self.source_name, max_new=_MAX_UNSEEN_FETCHES
-        )
+        to_fetch = unseen_listing_urls(urls, self.source_name)
         wanted = set(to_fetch)
         jobs = [job for job in parsed if job["url"] in wanted]
         logger.info(

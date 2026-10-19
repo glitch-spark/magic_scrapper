@@ -20,6 +20,17 @@ def db_session():
 
 
 @pytest.fixture(autouse=True)
+def _silence_alerts(monkeypatch, request):
+    """Do not email, Slack, or Telegram from connector tests."""
+    from utils import alerts
+
+    alerts._sent.clear()
+    if request.module.__name__.endswith("test_alerts"):
+        return
+    monkeypatch.setattr(alerts, "_open_channels", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _isolated_job_age_db(tmp_path, monkeypatch):
     """Do not read the operator's job_apply_agent.db when resolving age windows."""
     db = tmp_path / "job_age_isol.db"

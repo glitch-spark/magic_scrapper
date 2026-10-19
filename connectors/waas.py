@@ -37,6 +37,7 @@ from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
 
 from connectors.base import BaseConnector
+from utils.alerts import ScrapeHalted, halt
 from utils.ats_detector import detect_ats
 from utils.job_age import job_age_cutoff
 from utils.job_store import remember_listing_urls, unseen_listing_urls
@@ -145,6 +146,8 @@ class WaasConnector(BaseConnector):
                 )
                 _enrich_details(page, all_jobs, on_job=self._emit)
                 remembered = [job["url"] for job in all_jobs]
+        except ScrapeHalted:
+            raise
         except Exception as e:
             logger.info(f"WAAS fetch aborted ({type(e).__name__}): {e}")
             logger.debug(traceback.format_exc())
@@ -1051,7 +1054,11 @@ def _login(page: Any, email: str, password: str) -> bool:
         return True
     if page.locator("iframe[src*='recaptcha'], iframe[src*='hcaptcha'], iframe[src*='turnstile']").count():
         logger.error("WAAS login requires captcha — cannot continue headless")
-        return False
+        halt(
+            "login_halt",
+            "WAAS login requires captcha. Sign in manually, then rerun the fetch.",
+            source="waas",
+        )
     if page.locator("#ycid-input").count() == 0:
         logger.error("WAAS login form not found")
         return False
@@ -1079,7 +1086,11 @@ def _login(page: Any, email: str, password: str) -> bool:
             return True
         if page.locator("input[name='totp'], #totp-input, input[autocomplete='one-time-code']").count():
             logger.error("WAAS login requires TOTP — cannot continue")
-            return False
+            halt(
+                "login_halt",
+                "WAAS login requires a one-time code. Finish sign-in manually, then rerun the fetch.",
+                source="waas",
+            )
         page.wait_for_timeout(500)
 
     logger.error("WAAS login did not succeed")

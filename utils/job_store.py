@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 import config
 from models.database import Job
+from utils.alerts import ScrapeHalted, halt, is_db_write_error, is_skippable_db_lock
 from utils.logger import setup_logger
+from utils.mongo_jobs import mirror_job
 
 logger = setup_logger("job_store")
 
@@ -23,11 +25,30 @@ _engine = None
 _SessionLocal: sessionmaker | None = None
 
 
+def configure_sqlite(engine) -> None:
+    """Let the fetch and the scraper write the same file without blocking."""
+    if getattr(getattr(engine, "dialect", None), "name", "") != "sqlite":
+        return
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
+
 def _session() -> Session | None:
     global _engine, _SessionLocal
     try:
         if _SessionLocal is None:
-            _engine = create_engine(config.DATABASE_URL)
+            connect_args = (
+                {"timeout": 30, "check_same_thread": False}
+                if str(config.DATABASE_URL).startswith("sqlite")
+                else {}
+            )
+            _engine = create_engine(config.DATABASE_URL, connect_args=connect_args)
+            configure_sqlite(_engine)
             _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
         return _SessionLocal()
     except Exception as e:
@@ -160,5 +181,111 @@ def remember_listing_urls(source: str, urls: Iterable[str]) -> None:
             session.rollback()
         except Exception:
             pass
+    finally:
+        session.close()
+
+
+def jobs_with_url_host(source: str, host: str) -> list[tuple[str, str]]:
+    """Return ``(external_id, url)`` for jobs whose URL is on ``host``."""
+    session = _session()
+    if session is None:
+        return []
+    needle = (host or "").lower().removeprefix("www.")
+    if not needle:
+        return []
+    try:
+        rows = (
+            session.query(Job.external_id, Job.url)
+            .filter(Job.source == source, Job.url.isnot(None))
+            .all()
+        )
+        out: list[tuple[str, str]] = []
+        for ext, url in rows:
+            if not ext or not url:
+                continue
+            if needle in str(url).lower():
+                out.append((str(ext), str(url)))
+        return out
+    except Exception as e:
+        logger.debug(f"jobs_with_url_host({source!r}, {host!r}) failed: {e}")
+        return []
+    finally:
+        session.close()
+
+
+def source_job_urls(source: str) -> list[tuple[str, str]]:
+    """Return ``(external_id, url)`` for every stored job from ``source``."""
+    session = _session()
+    if session is None:
+        return []
+    try:
+        rows = (
+            session.query(Job.external_id, Job.url)
+            .filter(Job.source == source, Job.url.isnot(None))
+            .all()
+        )
+        return [(str(ext), str(url)) for ext, url in rows if ext and url]
+    except Exception as e:
+        logger.debug(f"source_job_urls({source!r}) failed: {e}")
+        return []
+    finally:
+        session.close()
+
+
+def stored_seen_listings(source: str) -> list[str]:
+    """Return listing URLs already recorded for ``source``."""
+    session = _session()
+    if session is None:
+        return []
+    try:
+        _ensure_seen_table(session)
+        rows = session.execute(
+            text("SELECT url FROM seen_listing_urls WHERE source = :source"),
+            {"source": source},
+        )
+        return [str(row[0]) for row in rows if row[0]]
+    except Exception as e:
+        logger.debug(f"stored_seen_listings({source!r}) failed: {e}")
+        return []
+    finally:
+        session.close()
+
+
+def update_job_url(
+    source: str,
+    external_id: str,
+    url: str,
+    *,
+    ats_type: str | None = None,
+) -> bool:
+    """Set ``Job.url`` (and optional ``ats_type``) for one stored job."""
+    session = _session()
+    if session is None or not external_id or not url:
+        return False
+    try:
+        job = (
+            session.query(Job)
+            .filter(Job.source == source, Job.external_id == str(external_id))
+            .one_or_none()
+        )
+        if job is None:
+            return False
+        job.url = url
+        if ats_type is not None:
+            job.ats_type = ats_type
+        session.commit()
+        mirror_job(job)
+        return True
+    except ScrapeHalted:
+        raise
+    except Exception as e:
+        logger.debug(f"update_job_url({source!r}, {external_id!r}) failed: {e}")
+        if not is_skippable_db_lock(e) and is_db_write_error(e):
+            halt("db_write", str(e), source="sqlite")
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        return False
     finally:
         session.close()

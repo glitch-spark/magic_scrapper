@@ -5,6 +5,8 @@ cover-letters/
 
 # Secrets
 .env
+.chrome-remoteyeah/
+.cloak-builtin/
 
 # Coverage
 .coverage
